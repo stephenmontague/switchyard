@@ -1,0 +1,43 @@
+package com.proxyapp.control;
+
+import com.proxyapp.routing.EdgeConfig;
+import io.temporal.workflow.QueryMethod;
+import io.temporal.workflow.SignalMethod;
+import io.temporal.workflow.WorkflowInterface;
+import io.temporal.workflow.WorkflowMethod;
+
+import java.util.List;
+
+/**
+ * Singleton control workflow per install (Workflow ID {@code proxy-control}). The cloud
+ * drives it via signals over its egress connection to Temporal; the proxy polls it via
+ * query and hot-applies changes. This indirection is what lets an egress-only proxy be
+ * remotely controlled.
+ */
+@WorkflowInterface
+public interface ProxyControlWorkflow {
+
+    String WORKFLOW_ID = "proxy-control";
+
+    @WorkflowMethod
+    void run(ProxyControlState initialState);
+
+    @SignalMethod
+    void enable();
+
+    @SignalMethod
+    void disable();
+
+    /** Replace the full device/routing config. Rejected (with {@code lastError}) if invalid. */
+    @SignalMethod
+    void applyConfig(List<EdgeConfig> devices);
+
+    @SignalMethod
+    void upsertDevice(EdgeConfig device);
+
+    @SignalMethod
+    void removeDevice(String deviceId);
+
+    @QueryMethod
+    ProxyControlState getState();
+}

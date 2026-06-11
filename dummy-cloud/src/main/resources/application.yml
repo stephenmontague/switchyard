@@ -1,0 +1,21 @@
+spring:
+  application:
+    name: dummy-cloud
+
+server:
+  port: 8081
+
+cloud:
+  temporal:
+    target: 127.0.0.1:7233
+    namespace: default
+  proxy:
+    task-queue: proxy-main
+    control-task-queue: proxy-control
+    control-workflow-id: proxy-control
+
+---
+spring:
+  config:
+    activate:
+      on-profile: local

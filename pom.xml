@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.proxyapp</groupId>
+  <artifactId>cloud-edge-proxy</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <packaging>pom</packaging>
+  <name>cloud-edge-proxy</name>
+  <description>Cloud-Edge durable proxy monorepo: the connector plus its demo harness</description>
+
+  <!-- Aggregation only — each module keeps spring-boot-starter-parent as its parent. -->
+  <modules>
+    <module>proxy</module>
+    <module>dummy-cloud</module>
+    <module>dummy-edge</module>
+  </modules>
+</project>

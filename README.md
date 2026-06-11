@@ -1,0 +1,125 @@
+# Cloud ↔ Edge Durable Proxy
+
+A **domain-agnostic, durable connector** that bridges any **Cloud** application and any
+**Edge** target (on-prem device, machine, or network) in both directions, with
+**Temporal** as the durable backbone. See [PLAN.md](PLAN.md) for the full design.
+
+## Repo layout
+
+| Module                          | What it is                                                                 |
+| ------------------------------- | -------------------------------------------------------------------------- |
+| [`proxy/`](proxy/)              | The connector itself — the only Temporal worker, egress-only               |
+| [`dummy-cloud/`](dummy-cloud/README.md) | Demo cloud app (:8081) — Temporal client, demo + control endpoints |
+| [`dummy-edge/`](dummy-edge/README.md)   | Demo edge target (:8082, TCP 9001, FTP 2222) — auto-confirms       |
+| [`config/`](config/)            | Demo routing configs for hot-reload / validation demos                     |
+| [`justfile`](justfile)          | Build + demo recipes (all run from this root)                              |
+
+The root [pom.xml](pom.xml) is a Maven aggregator: `mvn package` builds all three apps.
+
+## How it works
+
+The proxy is the **only Temporal worker** and connects **egress-only** — no inbound
+firewall ports on the customer side. Data and control both ride the same outbound gRPC
+connection:
+
+- **Cloud → Edge**: the cloud client starts a `DeliverToEdge` **standalone activity**
+  (Activity ID `{messageType}-{businessId}`, reuse `REJECT_DUPLICATE` + conflict
+  `USE_EXISTING`); the proxy executes it — route → codec → connector → device channel.
+- **Edge → Cloud**: the device pushes to a proxy ingress **channel** (HTTP path / TCP
+  port / FTP folder). The channel — never the payload — identifies the message type. The
+  proxy starts a `DeliverToCloud` standalone activity and acks the device only after
+  Temporal accepted the enqueue.
+- **Control plane**: a singleton `ProxyControlWorkflow` (Workflow ID `proxy-control`)
+  holds desired state `{enabled, devices[], version}`. The cloud drives it with signals;
+  the proxy polls it via query and a `Reconciler` hot-applies changes (listeners, routes,
+  worker polling) with no restart.
+
+Everything domain-specific (message types, codecs, cloud endpoints, device templates)
+lives in a **profile**; the **Warehouse** profile (WMS ↔ MHE) ships as the reference demo.
+
+## Prerequisites
+
+- Java 17+ (21 recommended), Maven, [`just`](https://github.com/casey/just)
+- Temporal CLI **v1.7.0+** (ships Server **1.31.0+**, required for Standalone Activities)
+
+## Run the demo (4 terminals, all from this root)
+
+```sh
+just temporal-dev        # 1: Temporal dev server (enables activity.enableStandalone)
+just run-proxy           # 2: the proxy        (:8080, worker on proxy-main/proxy-control)
+just run-dummy-cloud     # 3: dummy cloud app  (:8081, Temporal client only)
+just run-dummy-edge      # 4: dummy edge target(:8082 + TCP 9001 + FTP 2222)
+```
+
+Then:
+
+```sh
+just demo-http            # WAVE_RELEASE → /pick-tasks → PICK_CONFIRM → cloud
+just demo-putaway-tcp     # CONTAINER_PUTAWAY → TCP 9001 → PUTAWAY_CONFIRM → TCP 6001
+just demo-cycle-count-ftp # CYCLE_COUNT_REQ → FTP folder → CYCLE_COUNT_CONFIRM → FTP folder
+just demo-idempotency     # duplicate dispatch collapses to one execution
+just demo-disable         # remote soft-off (ingress stops, outbound pauses, egress stays up)
+just demo-enable          # remote resume
+just demo-apply-config    # hot routing reload (config/sample-routes.json), no restart
+just demo-apply-bad-config# out-of-pool port → rejected with a clear message
+just demo-state           # control workflow state (via cloud → Temporal query)
+just proxy-status         # proxy's locally applied state (listeners, routes)
+```
+
+Inspect executions in the Temporal UI at <http://localhost:8233> (standalone activities
+have their own nav item).
+
+> **Port conflicts:** the demo uses 7233/8080/8081/8082 (see PLAN.md appendix). All ports
+> are overridable via standard Spring env vars, e.g.
+> `SERVER_PORT=8090 SPRING_TEMPORAL_CONNECTION_TARGET=127.0.0.1:7243 PROXY_CLOUD_BASE_URL=http://localhost:8091 PROXY_SEED_DEVICES_RESOURCE=file:./config/e2e-devices.json just run-proxy`
+> (the seed-file path resolves from this root, where all recipes run).
+
+## Targeting Temporal Cloud
+
+Activate the `cloud` Spring profile and provide the install's bootstrap credentials
+(namespace-per-install keeps the blast radius to that customer's own namespace):
+
+```sh
+TEMPORAL_TARGET=<ns-id>.<region>.tmprl.cloud:7233 \
+TEMPORAL_NAMESPACE=<tenant>.<account-id> \
+TEMPORAL_KEY_FILE=/path/client.key TEMPORAL_CERT_FILE=/path/client.pem \
+java -jar proxy/target/proxy-app-*.jar --spring.profiles.active=cloud
+```
+
+## Architecture map (proxy module)
+
+```
+proxy/src/main/java/com/proxyapp/
+├── config/        ProxyProperties (bootstrap), ProxyAppConfig (wiring), ActivityClient bean
+├── routing/       MessageType, Direction, Channel, RouteBinding, EdgeConfig, MessageCatalog,
+│                  RouteTable, ConfigValidator, DeviceTemplate, RoutingState,
+│                  MessageTypeResolver SPI + FilenamePatternResolver (opt-in multi-type channels)
+├── profile/       Profile SPI, WarehouseProfile (reference), ProfileRegistry
+├── codec/         MessageCodec SPI, JsonCodec (default), CodecRegistry
+├── connector/     Connector SPI, Http/Tcp/FtpConnector, ChannelTarget, ConnectorFactory
+├── temporal/      DeliverToEdgeActivity, DeliverToCloudActivity (standalone activities)
+├── ingress/       InboundGateway (channel→type→decode→enqueue→ack),
+│                  HttpIngressController, TcpSocketServer, FtpIngressListener, AdminController
+└── control/       ProxyControlWorkflow(+Impl), ProxyControlStarter, ProxyControlPoller, Reconciler
+```
+
+## Per-transport reliability profile
+
+| Transport | Inbound (edge → proxy) | Outbound (proxy → edge) |
+| --------- | ---------------------- | ----------------------- |
+| **HTTP**  | Device gets `202` only after Temporal accepted the enqueue (`503` while disabled, `404` unbound channel). Relies on device retry until acked. | Non-2xx fails the activity → Temporal retries. Device should treat repeated POSTs of the same business id as idempotent. |
+| **TCP**   | `ACK <activityId>` written only after enqueue; `ERR …` otherwise. Relies on device retry until acked. | Send fails unless the device answers `ACK` → Temporal retries. Raw TCP has no store-and-forward of its own. |
+| **FTP**   | Inherently store-and-forward: files persist in the drop folder until consumed (deleted) after a successful enqueue; failed files are re-swept on the next reconcile. | Upload uses temp-name-then-rename so the device never sees partial files; the deterministic filename (`{activityId}.json`) makes activity retries overwrite, not duplicate. |
+
+Common to all: **Activity ID = `{messageType}-{businessId}`** collapses duplicate cloud
+dispatches and duplicate edge pushes into one execution (exactly-once delivery on top of
+at-least-once activities). Outbound sends run inside activities and must tolerate
+redelivery. There is deliberately **no local durable spool** — Temporal Cloud's SLA plus
+the SDK's auto-reconnecting channel cover transient unreachability, and an offline proxy
+just means the work waits in Temporal and delivers on reconnect.
+
+## Tests
+
+```sh
+just test   # routing core, validator, codec, templates, resolver, control workflow
+```
