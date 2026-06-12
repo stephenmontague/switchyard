@@ -13,6 +13,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -32,6 +33,8 @@ class ProxyControlWorkflowTest {
 
         ProxyControlState seed = new ProxyControlState();
         seed.setTypeDirections(new WarehouseProfile().catalog().typeDirections());
+        seed.setCatalogEntries(new WarehouseProfile().catalog().entries().stream()
+                .map(CatalogEntryDto::from).collect(Collectors.toList()));
         seed.setTcpPortPool(IntStream.rangeClosed(6000, 6010).boxed().toList());
 
         workflow = env.getWorkflowClient().newWorkflowStub(ProxyControlWorkflow.class,
@@ -152,6 +155,90 @@ class ProxyControlWorkflowTest {
         com.proxyapp.routing.TcpProtocol override = stored.bindings().get(0).tcpProtocol();
         assertThat(override.endDelimiter()).isEqualTo("<LF>");
         assertThat(override.awaitReply()).isFalse();
+    }
+
+    @Test
+    void upsertMessageTypeAddsToCatalogAndUpdatesTypeDirections() {
+        workflow.upsertMessageType(
+                new CatalogEntryDto("SHIPMENT_NOTICE", "EDGE_TO_CLOUD", "xml",
+                        "/api/shipment-notice", "asnId"));
+        ProxyControlState state = workflow.getState();
+        assertThat(state.getLastError()).isNull();
+        assertThat(state.getTypeDirections()).containsEntry("SHIPMENT_NOTICE", "EDGE_TO_CLOUD");
+        CatalogEntryDto stored = state.getCatalogEntries().stream()
+                .filter(e -> e.type().equals("SHIPMENT_NOTICE")).findFirst().orElseThrow();
+        assertThat(stored.codec()).isEqualTo("xml");
+        assertThat(stored.cloudEndpoint()).isEqualTo("/api/shipment-notice");
+    }
+
+    @Test
+    void upsertMessageTypeReplacesExistingByName() {
+        int before = workflow.getState().getCatalogEntries().size();
+        workflow.upsertMessageType(
+                new CatalogEntryDto("PICK_CONFIRM", "EDGE_TO_CLOUD", "json",
+                        "/api/pick-confirm-v2", "orderId"));
+        ProxyControlState state = workflow.getState();
+        assertThat(state.getCatalogEntries()).hasSize(before); // replaced, not added
+        CatalogEntryDto stored = state.getCatalogEntries().stream()
+                .filter(e -> e.type().equals("PICK_CONFIRM")).findFirst().orElseThrow();
+        assertThat(stored.cloudEndpoint()).isEqualTo("/api/pick-confirm-v2");
+    }
+
+    @Test
+    void upsertMessageTypeRejectsUnknownCodec() {
+        workflow.upsertMessageType(
+                new CatalogEntryDto("WIDGET_EVENT", "EDGE_TO_CLOUD", "yaml", "/api/widget", null));
+        ProxyControlState state = workflow.getState();
+        assertThat(state.getLastError()).contains("unknown codec 'yaml'");
+        assertThat(state.getTypeDirections()).doesNotContainKey("WIDGET_EVENT");
+    }
+
+    @Test
+    void upsertMessageTypeRejectsEdgeToCloudWithoutCloudEndpoint() {
+        workflow.upsertMessageType(
+                new CatalogEntryDto("WIDGET_EVENT", "EDGE_TO_CLOUD", "json", null, "widgetId"));
+        assertThat(workflow.getState().getLastError())
+                .contains("EDGE_TO_CLOUD type requires a cloudEndpoint");
+    }
+
+    @Test
+    void removeMessageTypeRejectedWhenADeviceBindingReferencesIt() {
+        workflow.applyConfig(List.of(device(6001))); // binds PUTAWAY_CONFIRM
+        workflow.removeMessageType("PUTAWAY_CONFIRM");
+        ProxyControlState state = workflow.getState();
+        assertThat(state.getLastError())
+                .contains("PUTAWAY_CONFIRM is referenced by device(s): mhe-1");
+        assertThat(state.getTypeDirections()).containsKey("PUTAWAY_CONFIRM");
+    }
+
+    @Test
+    void removeMessageTypeSucceedsWhenUnused() {
+        workflow.removeMessageType("CYCLE_COUNT_REQ");
+        ProxyControlState state = workflow.getState();
+        assertThat(state.getLastError()).isNull();
+        assertThat(state.getTypeDirections()).doesNotContainKey("CYCLE_COUNT_REQ");
+    }
+
+    @Test
+    void importCatalogReplacesTheWholeCatalog() {
+        workflow.importCatalog(List.of(
+                new CatalogEntryDto("ORDER_PUSH", "CLOUD_TO_EDGE", "json", null, "orderId"),
+                new CatalogEntryDto("ORDER_ACK", "EDGE_TO_CLOUD", "json", "/api/order-ack", "orderId")));
+        ProxyControlState state = workflow.getState();
+        assertThat(state.getLastError()).isNull();
+        assertThat(state.getTypeDirections()).containsOnlyKeys("ORDER_PUSH", "ORDER_ACK");
+    }
+
+    @Test
+    void importCatalogRejectedWhenItWouldOrphanAnExistingBinding() {
+        workflow.applyConfig(List.of(device(6001))); // binds PUTAWAY_CONFIRM
+        workflow.importCatalog(List.of(
+                new CatalogEntryDto("ORDER_PUSH", "CLOUD_TO_EDGE", "json", null, "orderId")));
+        ProxyControlState state = workflow.getState();
+        assertThat(state.getLastError())
+                .contains("would orphan device binding(s): mhe-1/PUTAWAY_CONFIRM");
+        // the warehouse catalog stays live
+        assertThat(state.getTypeDirections()).containsKey("PUTAWAY_CONFIRM");
     }
 
     private static RouteBinding binding(ProxyControlState state) {

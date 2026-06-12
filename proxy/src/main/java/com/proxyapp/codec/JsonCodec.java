@@ -6,9 +6,6 @@ import com.proxyapp.model.CanonicalMessage;
 import com.proxyapp.routing.CatalogEntry;
 
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
 
 /**
  * Default codec: the payload is already JSON. Encoding sends the payload as-is; decoding
@@ -46,18 +43,8 @@ public class JsonCodec implements MessageCodec {
             }
         }
         if (businessId == null || businessId.isBlank()) {
-            businessId = contentHash(payload);
+            businessId = ContentHash.of(payload);
         }
         return new CanonicalMessage(entry.type().value(), businessId, payload);
-    }
-
-    private static String contentHash(String payload) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest(payload.getBytes(StandardCharsets.UTF_8));
-            return HexFormat.of().formatHex(hash, 0, 8);
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException(e);
-        }
     }
 }

@@ -172,6 +172,17 @@ demo-putaway-tcp-framed:
     @echo ">> Check dummy-cloud received the PUTAWAY_CONFIRM (pushed back as a framed message):"
     curl -fsS localhost:{{cloud_port}}/demo/confirms | jq '[.[] | select(.businessId=="CTN-FRAMED")]'
 
+# Add a CUSTOM message type to the live catalog (Part 3) — no code change, no restart.
+# Defines a non-warehouse type with the xml codec; it shows up in typeDirections immediately.
+# (Manage the catalog visually on the Switchyard UI's Catalog tab.) Needs the rebuilt dummy-cloud.
+demo-catalog:
+    @echo ">> Defining a custom message type SHIPMENT_SCAN (xml codec, edge->cloud) ..."
+    curl -fsS -X POST localhost:{{cloud_port}}/control/upsert-message-type \
+        -H 'content-type: application/json' \
+        -d '{"type":"SHIPMENT_SCAN","direction":"EDGE_TO_CLOUD","codec":"xml","cloudEndpoint":"/api/shipment-scan","businessIdField":"shipmentId"}' \
+        | jq '.state.typeDirections'
+    @echo ">> SHIPMENT_SCAN is now routable — defined at runtime, no profile edit, no restart."
+
 # Push an INVALID routing config (TCP port outside the pool) -> expect rejection
 demo-apply-bad-config:
     curl -fsS -X POST localhost:{{cloud_port}}/control/apply-config \

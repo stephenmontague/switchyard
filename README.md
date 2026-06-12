@@ -11,7 +11,7 @@ A **domain-agnostic, durable connector** that bridges any **Cloud** application 
 | [`proxy/`](proxy/)              | The connector itself — the only Temporal worker, egress-only               |
 | [`dummy-cloud/`](dummy-cloud/README.md) | Demo cloud app (:8091) — Temporal client, demo + control endpoints |
 | [`dummy-edge/`](dummy-edge/README.md)   | Demo edge target (:8092, TCP 9001, FTP 2222) — auto-confirms       |
-| [`management-ui/`](management-ui/README.md) | **Switchyard** operations console (:3000, Next.js) — lifecycle, routing wizard, live Temporal feed |
+| [`management-ui/`](management-ui/README.md) | **Switchyard** operations console (:3000, Next.js) — lifecycle, message catalog, routing wizard, live Temporal feed |
 | [`config/`](config/)            | Demo routing configs for hot-reload / validation demos                     |
 | [`scripts/`](scripts/)          | `proxy-supervisor.sh` — restart-on-exit wrapper for remote restarts        |
 | [`justfile`](justfile)          | Build + demo recipes (all run from this root)                              |
@@ -41,7 +41,11 @@ connection:
   paired with the supervisor wrapper, that's a remote restart over egress-only gRPC.
 
 Everything domain-specific (message types, codecs, cloud endpoints, device templates)
-lives in a **profile**; the **Warehouse** profile (WMS ↔ MHE) ships as the reference demo.
+starts in a **profile**; the **Warehouse** profile (WMS ↔ MHE) ships as the reference demo.
+The profile is only a **seed** — the message catalog is operational state in the control
+workflow, so an operator defines their own message types (name, direction, codec, cloud
+endpoint, dedup field) through the UI's **Catalog** tab with no code change or restart.
+Payloads can be **json**, **xml**, or **raw** (opaque passthrough), chosen per type.
 
 ## Prerequisites
 
@@ -86,6 +90,7 @@ just demo-disable         # remote soft-off (ingress stops, outbound pauses, egr
 just demo-enable          # remote resume
 just demo-apply-config    # hot routing reload (config/sample-routes.json), no restart
 just demo-apply-bad-config# out-of-pool port → rejected with a clear message
+just demo-catalog         # define a custom message type at runtime (xml codec), no restart
 just demo-state           # control workflow state (via cloud → Temporal query)
 just proxy-status         # proxy's locally applied state (listeners, routes)
 ```
@@ -120,13 +125,14 @@ proxy/src/main/java/com/proxyapp/
 │                  RouteTable, ConfigValidator, DeviceTemplate, RoutingState,
 │                  MessageTypeResolver SPI + FilenamePatternResolver (opt-in multi-type channels)
 ├── profile/       Profile SPI, WarehouseProfile (reference), ProfileRegistry
-├── codec/         MessageCodec SPI, JsonCodec (default), CodecRegistry
+├── codec/         MessageCodec SPI, JsonCodec/XmlCodec/RawCodec, CodecRegistry
 ├── connector/     Connector SPI, Http/Tcp/FtpConnector, ChannelTarget, ConnectorFactory
 ├── temporal/      workflow/ DeliverToEdgeWorkflow (cloud→edge dispatch)
 │                  activity/ DeliverToEdgeActivity ("TransmitToDevice"), DeliverToCloudActivity
 ├── ingress/       InboundGateway (channel→type→decode→enqueue→ack),
 │                  HttpIngressController, TcpSocketServer, FtpIngressListener, AdminController
-└── control/       ProxyControlWorkflow(+Impl), ProxyControlStarter, ProxyControlPoller, Reconciler
+└── control/       ProxyControlWorkflow(+Impl), ProxyControlStarter, ProxyControlPoller, Reconciler,
+                   CatalogEntryDto + CatalogValidator (operator-editable message catalog)
 ```
 
 ## Per-transport reliability profile
@@ -148,8 +154,8 @@ just means the work waits in Temporal and delivers on reconnect.
 ## Tests
 
 ```sh
-just test      # Java: routing core, validator, codec, TCP wire protocol, control workflow
-just test-ui   # TypeScript: WireString/validator parity vectors (vitest)
+just test      # Java: routing core, validators, codecs, TCP wire protocol, catalog signals
+just test-ui   # TypeScript: WireString + config + catalog validator parity vectors (vitest)
 ```
 
 ## License

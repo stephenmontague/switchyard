@@ -2,6 +2,8 @@ package com.proxyapp.config;
 
 import com.proxyapp.codec.CodecRegistry;
 import com.proxyapp.codec.JsonCodec;
+import com.proxyapp.codec.RawCodec;
+import com.proxyapp.codec.XmlCodec;
 import com.proxyapp.connector.ConnectorFactory;
 import com.proxyapp.connector.FtpConnector;
 import com.proxyapp.connector.HttpConnector;
@@ -51,7 +53,7 @@ public class ProxyAppConfig {
 
     @Bean
     public CodecRegistry codecRegistry() {
-        return new CodecRegistry(List.of(new JsonCodec()));
+        return new CodecRegistry(List.of(new JsonCodec(), new XmlCodec(), new RawCodec()));
     }
 
     @Bean

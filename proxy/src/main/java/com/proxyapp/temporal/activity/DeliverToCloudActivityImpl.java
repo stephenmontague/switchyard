@@ -4,8 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.proxyapp.config.ProxyProperties;
 import com.proxyapp.model.CanonicalMessage;
 import com.proxyapp.routing.CatalogEntry;
-import com.proxyapp.routing.MessageCatalog;
 import com.proxyapp.routing.MessageType;
+import com.proxyapp.routing.RoutingState;
 import io.temporal.spring.boot.ActivityImpl;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -25,20 +25,23 @@ public class DeliverToCloudActivityImpl implements DeliverToCloudActivity {
     private static final Logger log = LoggerFactory.getLogger(DeliverToCloudActivityImpl.class);
 
     private final ProxyProperties properties;
-    private final MessageCatalog catalog;
+    private final RoutingState routingState;
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final HttpClient httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(5))
             .build();
 
-    public DeliverToCloudActivityImpl(ProxyProperties properties, MessageCatalog catalog) {
+    public DeliverToCloudActivityImpl(ProxyProperties properties, RoutingState routingState) {
         this.properties = properties;
-        this.catalog = catalog;
+        this.routingState = routingState;
     }
 
     @Override
     public void deliver(CanonicalMessage message) {
-        CatalogEntry entry = catalog.require(MessageType.of(message.messageType()));
+        // Read the catalog from the live route table — the Reconciler rebuilds it from control
+        // state each reconcile, so the cloudEndpoint reflects the operator's latest catalog edits.
+        CatalogEntry entry = routingState.table().catalog()
+                .require(MessageType.of(message.messageType()));
         String url = properties.cloud().baseUrl() + entry.cloudEndpoint();
         try {
             HttpRequest request = HttpRequest.newBuilder()

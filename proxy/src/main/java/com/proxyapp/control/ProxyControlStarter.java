@@ -13,7 +13,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * Ensures the singleton control workflow exists, seeding it with the catalog's slim view,
@@ -44,6 +46,9 @@ public class ProxyControlStarter {
         seed.setEnabled(true);
         seed.setDevices(loadSeedDevices());
         seed.setTypeDirections(catalog.typeDirections());
+        seed.setCatalogEntries(catalog.entries().stream()
+                .map(CatalogEntryDto::from)
+                .collect(Collectors.toCollection(ArrayList::new)));
         seed.setTcpPortPool(properties.tcpPortPool());
 
         WorkflowOptions options = WorkflowOptions.newBuilder()

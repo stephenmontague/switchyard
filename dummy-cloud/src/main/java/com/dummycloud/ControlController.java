@@ -55,6 +55,27 @@ public class ControlController {
         return state();
     }
 
+    /** Body: JSON array of CatalogEntryDto — replaces the whole message catalog (Part 3). */
+    @PostMapping("/control/import-catalog")
+    public Map<String, Object> importCatalog(@RequestBody JsonNode entries) {
+        controlStub().signal("importCatalog", entries);
+        return state();
+    }
+
+    /** Body: a single CatalogEntryDto — adds or replaces one message type. */
+    @PostMapping("/control/upsert-message-type")
+    public Map<String, Object> upsertMessageType(@RequestBody JsonNode entry) {
+        controlStub().signal("upsertMessageType", entry);
+        return state();
+    }
+
+    @PostMapping("/control/remove-message-type/{type}")
+    public Map<String, Object> removeMessageType(
+            @org.springframework.web.bind.annotation.PathVariable String type) {
+        controlStub().signal("removeMessageType", type);
+        return state();
+    }
+
     @GetMapping("/control/state")
     public Map<String, Object> state() {
         JsonNode state = controlStub().query("getState", JsonNode.class);

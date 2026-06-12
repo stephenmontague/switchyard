@@ -1,4 +1,4 @@
-import type { Direction, EdgeConfig, RouteBinding, TcpProtocol } from "@/lib/types";
+import type { CatalogEntryDto, Direction, EdgeConfig, RouteBinding, TcpProtocol } from "@/lib/types";
 import { validateWireString } from "@/lib/wire-string";
 
 // Mirrors com.proxyapp.routing.ConfigValidator so the wizard can reject a bad config
@@ -157,6 +157,78 @@ function checkWireField(
   if (error != null) {
     errors.push(`${prefix}.${field}: ${error}`);
   }
+}
+
+// ---- Catalog validation — mirrors com.proxyapp.control.CatalogValidator verbatim. ----
+// Error message text must match the Java side character-for-character (vitest parity vectors
+// in catalog-validate.test.ts lock this), so the UI rejects exactly what the workflow would.
+
+const KNOWN_CODECS = new Set<string>(["json", "xml", "raw"]);
+
+function isBlank(value: string | null | undefined): boolean {
+  return value == null || value.trim() === "";
+}
+
+/** Validate one message-type entry (mirrors CatalogValidator.validateEntry). */
+export function validateCatalogEntry(
+  entry: CatalogEntryDto,
+  knownCodecs: Set<string> = KNOWN_CODECS,
+): string[] {
+  const errors: string[] = [];
+  const label = isBlank(entry?.type) ? "message type" : `message type ${entry.type}`;
+
+  if (isBlank(entry?.type)) {
+    errors.push("message type name must not be blank");
+  }
+
+  let edgeToCloud = false;
+  if (isBlank(entry?.direction)) {
+    errors.push(`${label}: direction must not be blank`);
+  } else if (entry.direction !== "CLOUD_TO_EDGE" && entry.direction !== "EDGE_TO_CLOUD") {
+    errors.push(
+      `${label}: unknown direction '${entry.direction}' (expected CLOUD_TO_EDGE or EDGE_TO_CLOUD)`,
+    );
+  } else {
+    edgeToCloud = entry.direction === "EDGE_TO_CLOUD";
+  }
+
+  if (isBlank(entry?.codec)) {
+    errors.push(`${label}: codec must not be blank`);
+  } else if (!knownCodecs.has(entry.codec)) {
+    const sorted = [...knownCodecs].sort();
+    errors.push(`${label}: unknown codec '${entry.codec}', available: [${sorted.join(", ")}]`);
+  }
+
+  if (edgeToCloud && isBlank(entry?.cloudEndpoint)) {
+    errors.push(`${label}: EDGE_TO_CLOUD type requires a cloudEndpoint`);
+  }
+  return errors;
+}
+
+/** Validate a whole catalog (mirrors CatalogValidator.validateCatalog). */
+export function validateCatalog(
+  entries: CatalogEntryDto[],
+  knownCodecs: Set<string> = KNOWN_CODECS,
+): string[] {
+  const errors: string[] = [];
+  if (entries == null) {
+    errors.push("catalog must not be null");
+    return errors;
+  }
+  if (entries.length === 0) {
+    errors.push("catalog must define at least one message type");
+    return errors;
+  }
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    errors.push(...validateCatalogEntry(entry, knownCodecs));
+    if (entry != null && !isBlank(entry.type) && seen.has(entry.type)) {
+      errors.push(`duplicate message type: ${entry.type}`);
+    } else if (entry != null && !isBlank(entry.type)) {
+      seen.add(entry.type);
+    }
+  }
+  return errors;
 }
 
 function claimInbound(

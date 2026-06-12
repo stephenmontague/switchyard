@@ -48,16 +48,27 @@ public class Reconciler {
     }
 
     public synchronized void apply(ProxyControlState desired) {
+        MessageCatalog effectiveCatalog;
+        try {
+            effectiveCatalog = catalogFor(desired);
+        } catch (RuntimeException e) {
+            // Malformed catalog (e.g. duplicate types) — the workflow validates first, so this
+            // is a belt-and-braces guard. Keep the last good config live rather than crash.
+            log.error("refusing to apply control state v{}: invalid catalog: {}",
+                    desired.getVersion(), e.getMessage());
+            return;
+        }
+
         List<String> errors = ConfigValidator.validate(
-                catalog, properties.tcpPortPool(), desired.getDevices());
+                effectiveCatalog, properties.tcpPortPool(), desired.getDevices());
         if (!errors.isEmpty()) {
             // The control workflow validates before accepting, so this only fires when the
-            // local catalog/pool disagrees with what the workflow was seeded with.
+            // local pool disagrees with what the workflow was seeded with.
             log.error("refusing to apply control state v{}: {}", desired.getVersion(), errors);
             return;
         }
 
-        RouteTable table = new RouteTable(catalog, desired.getDevices());
+        RouteTable table = new RouteTable(effectiveCatalog, desired.getDevices());
         routingState.update(table, desired.isEnabled(), desired.getVersion());
 
         if (desired.isEnabled()) {
@@ -72,6 +83,21 @@ public class Reconciler {
         log.info("applied control state v{}: enabled={}, devices={}, tcpPorts={}, ftpFolders={}, httpPaths={}",
                 desired.getVersion(), desired.isEnabled(), desired.getDevices().size(),
                 table.inboundTcpPorts(), table.inboundFtpFolders(), table.inboundHttpPaths());
+    }
+
+    /**
+     * The catalog to apply this reconcile: the operator-edited one held in control state, or —
+     * for a workflow that predates Part 3 ({@code catalogEntries == null}) — the boot profile
+     * catalog this proxy was built with. That fallback is what keeps upgrades non-breaking.
+     */
+    private MessageCatalog catalogFor(ProxyControlState desired) {
+        List<CatalogEntryDto> entries = desired.getCatalogEntries();
+        if (entries == null || entries.isEmpty()) {
+            return catalog;
+        }
+        return new MessageCatalog(entries.stream()
+                .map(CatalogEntryDto::toCatalogEntry)
+                .toList());
     }
 
     private void setDataWorkerSuspended(boolean suspend) {

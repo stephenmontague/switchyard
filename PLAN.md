@@ -12,7 +12,7 @@ This plan is split into **three parts**:
 
 - **Part 1 — Proxy Application (Java + Spring Boot + Maven).** The agnostic connector itself, plus a minimal `dummy-cloud` / `dummy-edge` harness to demo it end-to-end. ✅ **Complete.**
 - **Part 2 — Management UI (Next.js).** Standalone web app for lifecycle control (start/stop/restart), guided route configuration, and live Temporal visibility. ✅ **Complete** (`management-ui/`, the "Switchyard" console).
-- **Part 3 — Hardening & rollout.** Additional transports/codecs, profile library, observability, and on-prem packaging. **Not started.**
+- **Part 3 — Dynamic Message Catalog + Codecs.** Operator-editable message catalog (types, directions, codecs, cloud endpoints) through the UI — the warehouse profile becomes a seed, not a constraint — plus `xml`/`raw` codecs. **In progress.** (Further hardening & rollout tracked at the end of Part 3.)
 
 > ### ⚠️ Implementation conventions (read before coding)
 >
@@ -432,14 +432,117 @@ Progressive disclosure — collapsed by default. Expands to show the `proxy-cont
 
 ---
 
-# PART 3 — Hardening & Rollout
+# PART 3 — Dynamic Message Catalog + Codecs
 
-- **More codecs:** real edge formats — fixed-width, XML, delimited — behind `MessageCodec`. Per-(edge,type) codec selection.
-- **More transports / framing:** TCP length-prefixed & delimiter framing; FTP/SFTP; HTTP auth schemes.
-- **Profile & template library:** ready-made profiles beyond Warehouse; device templates for common edge models; import/export.
-- **Observability:** structured logging, metrics (per-type throughput, retries, reconcile events), health endpoints; surface activity failures back to the cloud.
-- **On-prem packaging (no Docker):** runnable `java -jar` + a service unit (systemd/Windows service) and a config bootstrap (namespace, certs, target). Document the install/runbook and the per-transport reliability profile.
-- **Multi-tenant onboarding:** scripted namespace + cert provisioning on the cloud side (out of this repo, but documented).
+> ### Why this part exists
+>
+> The proxy was built from a real integration headache (XML-over-TCP with custom framing).
+> The point of open-sourcing it is **general use** — anyone with a similar cloud↔edge problem
+> should be able to model *their* message types without writing Java. Until Part 3 the message
+> catalog was hardcoded in `WarehouseProfile` and the validator rejected any type not in it, so
+> "configure anything" stopped at the six warehouse types. Part 3 makes the catalog **operational
+> state** the operator edits through the Switchyard UI — the warehouse profile becomes a *seed*,
+> not a constraint — and ships **xml** and **raw** codecs alongside **json** so payload formats
+> aren't limited to JSON either.
+
+## 3.1 Catalog as control-plane state
+
+The message catalog moves from a boot-time Java object into the `ProxyControlWorkflow` state,
+right beside the device config it already holds. It is edited via signals, queried like
+everything else, and hot-applied by the proxy with no restart — the same control loop §4
+describes for routing.
+
+`ProxyControlState` gains `List<CatalogEntryDto> catalogEntries` (a flat, Jackson-friendly
+record: `type`, `direction`, `codec`, `cloudEndpoint`, `businessIdField`). The existing
+`typeDirections` map stays as a **derived projection** (recomputed whenever the catalog
+changes) so the device-binding validation in the signal handlers is unchanged.
+
+**New signals on `ProxyControlWorkflow`:**
+
+| Signal | Behavior (validated deterministically in-handler, rejected with `lastError` on failure) |
+|---|---|
+| `upsertMessageType(CatalogEntryDto)` | Add/replace one type. Checks: non-blank name, valid `direction`, known `codec`, `cloudEndpoint` required for `EDGE_TO_CLOUD`. |
+| `removeMessageType(String)` | Remove one type — **rejected if any device binding still references it** (lists the offending devices). |
+| `importCatalog(List<CatalogEntryDto>)` | Replace the whole catalog (profile import / reset). Rejected if it would orphan an existing binding. |
+
+Validation lives in a new pure `CatalogValidator` (mirrored byte-for-byte in the UI's
+`validate.ts`, same as `ConfigValidator`).
+
+## 3.2 Profile seeds, then the catalog is mutable
+
+`ProxyControlStarter.ensureStarted()` seeds `catalogEntries` from the active profile when it
+creates a **new** control workflow. Because the starter uses `USE_EXISTING`, a workflow that
+predates Part 3 keeps `catalogEntries == null`; the proxy detects that and **falls back to the
+boot profile catalog** (full backward compatibility — nothing breaks on upgrade). The UI's
+Catalog page offers "Import warehouse profile" to populate the state and start editing.
+
+## 3.3 Proxy-side application
+
+- **`Reconciler.apply()`** rebuilds a `MessageCatalog` from `state.catalogEntries` each reconcile
+  (fallback to the injected profile catalog when null/empty), then validates devices and builds
+  the `RouteTable` against it — so catalog edits go live in seconds, no restart.
+- **`DeliverToCloudActivityImpl`** reads the catalog from `routingState.table().catalog()`
+  (rebuilt each reconcile) instead of the boot bean, so inbound deliveries use the live
+  `cloudEndpoint`.
+
+## 3.4 Codecs: json, xml, raw
+
+`CodecRegistry` registers all three at startup; each type's `codec` field picks one.
+
+| Codec | Decode (edge → canonical) | Encode (canonical → edge) | Business id |
+|---|---|---|---|
+| **json** | parse JSON, read `businessIdField` | payload as-is | field value, else content hash |
+| **xml** | parse with the JDK `DocumentBuilder` (XXE-hardened), read the `businessIdField` element's text | payload as-is | element text, else content hash |
+| **raw** | passthrough, no parsing | payload as-is | content hash only (binary/opaque formats) |
+
+`encode` is passthrough for all three — the proxy routes payloads, it doesn't transform them;
+the only decode work is **business-id extraction for dedup**.
+
+## 3.5 Management UI — Message Types page
+
+A new **Catalog** tab (between Routes and Temporal) lists every type with its direction, codec,
+cloud endpoint, and business-id field. Add/Edit open a guided form (`type-form.tsx`); Remove
+confirms and surfaces the workflow's in-use rejection. An **Import warehouse profile** action
+seeds a fresh/legacy install. The device wizard gains a **build-from-scratch** path so an
+operator can bind *any* catalog type (not only the warehouse template), completing the
+"configure anything" loop. Validation mirrors `CatalogValidator`; vitest parity vectors keep
+the two in lockstep (like the WireString tests).
+
+## 3.6 Build order (Part 3)
+
+1. `CatalogEntryDto` + `ProxyControlState.catalogEntries` + `CatalogValidator`
+2. Three catalog signals in `ProxyControlWorkflow(+Impl)`; `ProxyControlStarter` seeding
+3. `Reconciler` dynamic-catalog rebuild; `DeliverToCloudActivityImpl` reads live catalog
+4. `XmlCodec` + `RawCodec` + shared `ContentHash`; register in `ProxyAppConfig`
+5. Java tests: catalog signals (accept/reject/in-use/orphan), `XmlCodec`/`RawCodec`, `CatalogValidator`
+6. UI: types + signal mappings + `validate.ts` rules + warehouse starter bundle
+7. UI: Catalog page + type form + Catalog tab; wizard build-from-scratch; vitest parity
+8. E2E verify (backward-compat, demo regression, custom type, xml, remove-protection) + commit
+
+## 3.7 Verification (Part 3)
+
+- **Backward compat:** an existing `proxy-control` workflow (no `catalogEntries`) keeps routing
+  via the profile catalog; "Import warehouse profile" from the UI populates the state.
+- **Demo regression:** `just demo-http` unchanged.
+- **Custom type E2E:** define `CUSTOM_EVENT` (EDGE_TO_CLOUD, json, `/api/custom-event`, `eventId`)
+  in the UI, bind a device to it, push a payload, see it arrive at the cloud endpoint.
+- **XML codec E2E:** a type with `codec=xml` decodes and extracts its business id from an element.
+- **Remove protection:** removing an in-use type is rejected with the device name; unknown codec
+  is rejected.
+- **Persona test:** a non-developer defines a new type and routes it end-to-end with the UI only.
+
+## Later — Hardening & Rollout (not started)
+
+- **More transports / framing:** SFTP; HTTP auth schemes; additional TCP framings beyond the
+  configurable start/stop delimiters already shipped.
+- **More codecs:** fixed-width and delimited (CSV) behind `MessageCodec`, per-(edge,type) selection.
+- **Profile & template library:** ready-made profiles beyond Warehouse; catalog/template import/export.
+- **Observability:** structured logging, metrics (per-type throughput, retries, reconcile events),
+  health endpoints; surface activity failures back to the cloud.
+- **On-prem packaging (no Docker):** `java -jar` + a service unit (systemd/Windows service) and a
+  config bootstrap (namespace, certs, target). Document the install/runbook.
+- **Multi-tenant onboarding:** scripted namespace + cert provisioning on the cloud side
+  (out of this repo, but documented).
 
 ---
 

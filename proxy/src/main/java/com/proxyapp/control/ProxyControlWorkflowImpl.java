@@ -2,6 +2,7 @@ package com.proxyapp.control;
 
 import com.proxyapp.routing.ConfigValidator;
 import com.proxyapp.routing.EdgeConfig;
+import com.proxyapp.routing.RouteBinding;
 import io.temporal.spring.boot.WorkflowImpl;
 import io.temporal.workflow.Workflow;
 import io.temporal.workflow.WorkflowInit;
@@ -9,7 +10,11 @@ import org.slf4j.Logger;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 @WorkflowImpl(taskQueues = "${proxy.control-task-queue}")
 public class ProxyControlWorkflowImpl implements ProxyControlWorkflow {
@@ -87,6 +92,70 @@ public class ProxyControlWorkflowImpl implements ProxyControlWorkflow {
     }
 
     @Override
+    public void upsertMessageType(CatalogEntryDto entry) {
+        List<String> errors = CatalogValidator.validateEntry(entry, CatalogValidator.KNOWN_CODECS);
+        if (!errors.isEmpty()) {
+            reject("upsertMessageType", errors);
+            return;
+        }
+        List<CatalogEntryDto> proposed = new ArrayList<>(currentCatalog());
+        proposed.removeIf(e -> e.type().equals(entry.type()));
+        proposed.add(entry);
+        setCatalog(proposed);
+        accept("upsertMessageType");
+    }
+
+    @Override
+    public void removeMessageType(String typeName) {
+        if (typeName == null || typeName.isBlank()) {
+            reject("removeMessageType", List.of("message type name must not be blank"));
+            return;
+        }
+        List<CatalogEntryDto> proposed = new ArrayList<>(currentCatalog());
+        boolean present = proposed.stream().anyMatch(e -> typeName.equals(e.type()));
+        if (!present) {
+            reject("removeMessageType", List.of("no message type named " + typeName));
+            return;
+        }
+        List<String> users = devicesReferencing(typeName);
+        if (!users.isEmpty()) {
+            reject("removeMessageType", List.of("message type " + typeName
+                    + " is referenced by device(s): " + String.join(", ", users)));
+            return;
+        }
+        proposed.removeIf(e -> typeName.equals(e.type()));
+        setCatalog(proposed);
+        accept("removeMessageType");
+    }
+
+    @Override
+    public void importCatalog(List<CatalogEntryDto> entries) {
+        List<String> errors = CatalogValidator.validateCatalog(entries, CatalogValidator.KNOWN_CODECS);
+        if (!errors.isEmpty()) {
+            reject("importCatalog", errors);
+            return;
+        }
+        Set<String> newTypes = entries.stream().map(CatalogEntryDto::type)
+                .collect(Collectors.toSet());
+        List<String> orphaned = new ArrayList<>();
+        for (EdgeConfig device : state.getDevices()) {
+            for (RouteBinding binding : device.bindings()) {
+                if (binding.messageType() != null
+                        && !newTypes.contains(binding.messageType().value())) {
+                    orphaned.add(device.deviceId() + "/" + binding.messageType().value());
+                }
+            }
+        }
+        if (!orphaned.isEmpty()) {
+            reject("importCatalog", List.of("catalog import would orphan device binding(s): "
+                    + String.join(", ", orphaned)));
+            return;
+        }
+        setCatalog(new ArrayList<>(entries));
+        accept("importCatalog");
+    }
+
+    @Override
     public void requestShutdown() {
         requestLifecycle(ProxyControlState.LIFECYCLE_SHUTDOWN);
     }
@@ -123,6 +192,44 @@ public class ProxyControlWorkflowImpl implements ProxyControlWorkflow {
         state.setLifecycleRequestId(Workflow.randomUUID().toString());
         changes++;
         log.info("lifecycle command '{}' requested ({})", command, state.getLifecycleRequestId());
+    }
+
+    /**
+     * The catalog to mutate. On a workflow that predates Part 3 the stored catalog is null;
+     * synthesize a degraded one from {@code typeDirections} (codec defaults to json, endpoints
+     * blank) so a single edit doesn't NPE. The UI steers operators to "Import profile" instead,
+     * which carries the full entries.
+     */
+    private List<CatalogEntryDto> currentCatalog() {
+        if (state.getCatalogEntries() != null) {
+            return state.getCatalogEntries();
+        }
+        List<CatalogEntryDto> synthesized = new ArrayList<>();
+        state.getTypeDirections().forEach((type, direction) ->
+                synthesized.add(new CatalogEntryDto(type, direction, "json", null, null)));
+        return synthesized;
+    }
+
+    /** Store the catalog and recompute the derived typeDirections projection in one place. */
+    private void setCatalog(List<CatalogEntryDto> entries) {
+        state.setCatalogEntries(entries);
+        Map<String, String> typeDirections = new LinkedHashMap<>();
+        for (CatalogEntryDto entry : entries) {
+            typeDirections.put(entry.type(), entry.direction());
+        }
+        state.setTypeDirections(typeDirections);
+    }
+
+    private List<String> devicesReferencing(String typeName) {
+        List<String> users = new ArrayList<>();
+        for (EdgeConfig device : state.getDevices()) {
+            boolean references = device.bindings().stream().anyMatch(binding ->
+                    binding.messageType() != null && typeName.equals(binding.messageType().value()));
+            if (references) {
+                users.add(device.deviceId());
+            }
+        }
+        return users;
     }
 
     private void accept(String change) {

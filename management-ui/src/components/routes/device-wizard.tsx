@@ -23,11 +23,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { CustomBindingsEditor, type AvailableType } from "@/components/routes/custom-bindings";
 import { WireProtocolFields } from "@/components/routes/wire-protocol-fields";
 import { awaitConfigOutcome, postSignal } from "@/lib/actions";
 import { matchPreset, summarizeProtocol, TCP_PRESETS } from "@/lib/tcp-presets";
 import { DEVICE_TEMPLATES, materialize, type DeviceTemplateDef, type SiteValues } from "@/lib/templates";
-import type { EdgeConfig, ProxyControlState, TcpProtocol } from "@/lib/types";
+import type { EdgeConfig, ProxyControlState, RouteBinding, TcpProtocol } from "@/lib/types";
 import { validateConfig } from "@/lib/validate";
 import { cn } from "@/lib/utils";
 
@@ -89,6 +90,9 @@ export function DeviceWizard({
   const mode = editing ? "edit" : "template";
   const [step, setStep] = useState(1);
   const [template, setTemplate] = useState<DeviceTemplateDef | null>(null);
+  // Build-from-scratch path: no template, operator picks catalog types directly.
+  const [custom, setCustom] = useState(false);
+  const [customBindings, setCustomBindings] = useState<RouteBinding[]>([]);
   const [site, setSite] = useState<SiteValues>(DEFAULT_SITE);
   const [channelOverrides, setChannelOverrides] = useState<Record<number, string>>({});
   const [showChannels, setShowChannels] = useState(false);
@@ -105,6 +109,8 @@ export function DeviceWizard({
     setChannelOverrides({});
     setApplying(false);
     setShowWire(false);
+    setCustom(false);
+    setCustomBindings([]);
     if (editing) {
       setTemplate(null);
       setSite(siteFromConfig(editing));
@@ -148,6 +154,17 @@ export function DeviceWizard({
         ftpPassword: site.ftpPassword || null,
         bindings: editing.bindings.map((b) => ({ ...b, channel: { ...b.channel } })),
       };
+    } else if (custom) {
+      base = {
+        deviceId: site.deviceId,
+        baseUrl: site.baseUrl || null,
+        host: site.host || null,
+        ftpPort: site.ftpPort,
+        ftpUser: site.ftpUser || null,
+        ftpPassword: site.ftpPassword || null,
+        bindings: customBindings.map((b) => ({ ...b, channel: { ...b.channel } })),
+        tcpProtocol: null,
+      };
     } else if (template) {
       base = materialize(template, site);
     }
@@ -165,7 +182,7 @@ export function DeviceWizard({
       return override != null ? { ...b, tcpProtocol: override } : { ...b, tcpProtocol: null };
     });
     return base;
-  }, [mode, editing, template, site, channelOverrides, deviceProtocol, bindingPresetIds, bindingProtocols]);
+  }, [mode, editing, custom, customBindings, template, site, channelOverrides, deviceProtocol, bindingPresetIds, bindingProtocols]);
 
   const errors = useMemo(() => {
     if (!draft) return [];
@@ -200,6 +217,15 @@ export function DeviceWizard({
   const tcpPool = state.tcpPortPool;
   const poolLabel = tcpPool.length > 0 ? `${tcpPool[0]}–${tcpPool[tcpPool.length - 1]}` : "—";
 
+  // Types an operator can bind in build-from-scratch mode: the editable catalog, or — on a
+  // pre-Part-3 install — the profile types the workflow still reports via typeDirections.
+  const availableTypes: AvailableType[] = useMemo(() => {
+    if (state.catalogEntries && state.catalogEntries.length > 0) {
+      return state.catalogEntries.map((e) => ({ type: e.type, direction: e.direction }));
+    }
+    return Object.entries(state.typeDirections).map(([type, direction]) => ({ type, direction }));
+  }, [state.catalogEntries, state.typeDirections]);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] overflow-y-auto border-ink sm:max-w-2xl">
@@ -218,10 +244,13 @@ export function DeviceWizard({
             {DEVICE_TEMPLATES.map((t) => (
               <button
                 key={t.id}
-                onClick={() => setTemplate(t)}
+                onClick={() => {
+                  setTemplate(t);
+                  setCustom(false);
+                }}
                 className={cn(
                   "panel cursor-pointer p-4 text-left transition-transform hover:-translate-y-0.5",
-                  template?.id === t.id && "outline outline-2 outline-signal",
+                  !custom && template?.id === t.id && "outline outline-2 outline-signal",
                 )}
               >
                 <div className="mb-1 flex items-center justify-between">
@@ -238,8 +267,29 @@ export function DeviceWizard({
                 </div>
               </button>
             ))}
+            <button
+              onClick={() => {
+                setCustom(true);
+                setTemplate(null);
+              }}
+              className={cn(
+                "panel cursor-pointer p-4 text-left transition-transform hover:-translate-y-0.5",
+                custom && "outline outline-2 outline-signal",
+              )}
+            >
+              <div className="mb-1 flex items-center justify-between">
+                <span className="font-mono text-[12px] font-semibold tracking-wide">
+                  Custom · build from scratch
+                </span>
+                <span className="chip">{availableTypes.length} types available</span>
+              </div>
+              <p className="text-[12px] leading-snug text-ink-soft">
+                Start empty and bind any message type from the catalog to a channel — for devices
+                that don&apos;t match a template, or any domain you&apos;ve modeled yourself.
+              </p>
+            </button>
             <div className="flex justify-end">
-              <Button className="btn-hard" disabled={!template} onClick={() => setStep(2)}>
+              <Button className="btn-hard" disabled={!template && !custom} onClick={() => setStep(2)}>
                 Continue
               </Button>
             </div>
@@ -271,7 +321,7 @@ export function DeviceWizard({
                   onChange={(e) => setSite({ ...site, host: e.target.value })}
                 />
               </Field>
-              {mode === "template" && (
+              {mode === "template" && !custom && (
                 <Field label="Base TCP port" hint={`Inbound ports must sit in the site pool ${poolLabel}.`}>
                   <Input
                     type="number"
@@ -308,33 +358,44 @@ export function DeviceWizard({
               )}
             </div>
 
-            <div>
-              <button
-                className="rule-label w-full cursor-pointer"
-                onClick={() => setShowChannels((s) => !s)}
-              >
-                channels {showChannels ? "▾" : "▸"}
-              </button>
-              {showChannels && draft && (
-                <div className="mt-2 flex flex-col gap-1.5">
-                  {draft.bindings.map((b, i) => (
-                    <div key={i} className="flex items-center gap-2">
-                      <span className="readout w-44 shrink-0 truncate text-[11px]">
-                        {b.messageType ?? "(resolver)"}
-                      </span>
-                      <span className="chip w-14 justify-center">{b.transport}</span>
-                      <Input
-                        className="readout h-7 text-[12px]"
-                        value={channelOverrides[i] ?? b.channel.value}
-                        onChange={(e) =>
-                          setChannelOverrides({ ...channelOverrides, [i]: e.target.value })
-                        }
-                      />
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+            {custom ? (
+              <div>
+                <div className="rule-label mb-2">bindings</div>
+                <CustomBindingsEditor
+                  available={availableTypes}
+                  bindings={customBindings}
+                  onChange={setCustomBindings}
+                />
+              </div>
+            ) : (
+              <div>
+                <button
+                  className="rule-label w-full cursor-pointer"
+                  onClick={() => setShowChannels((s) => !s)}
+                >
+                  channels {showChannels ? "▾" : "▸"}
+                </button>
+                {showChannels && draft && (
+                  <div className="mt-2 flex flex-col gap-1.5">
+                    {draft.bindings.map((b, i) => (
+                      <div key={i} className="flex items-center gap-2">
+                        <span className="readout w-44 shrink-0 truncate text-[11px]">
+                          {b.messageType ?? "(resolver)"}
+                        </span>
+                        <span className="chip w-14 justify-center">{b.transport}</span>
+                        <Input
+                          className="readout h-7 text-[12px]"
+                          value={channelOverrides[i] ?? b.channel.value}
+                          onChange={(e) =>
+                            setChannelOverrides({ ...channelOverrides, [i]: e.target.value })
+                          }
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             {draft && draft.bindings.some((b) => b.transport === "TCP") && (
               <div>
@@ -438,7 +499,7 @@ export function DeviceWizard({
               )}
               <Button
                 className="btn-hard"
-                disabled={!site.deviceId.trim()}
+                disabled={!site.deviceId.trim() || (custom && customBindings.length === 0)}
                 onClick={() => setStep(3)}
               >
                 Review

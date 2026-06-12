@@ -38,6 +38,17 @@ public class InboundController {
         return receive(message);
     }
 
+    /**
+     * Catch-all for any other inbound path. Part 3 lets operators define their own message
+     * types with arbitrary cloud endpoints; this stand-in cloud app accepts whatever path they
+     * point at (a real cloud app would add a typed handler). Spring routes the named endpoints
+     * above to their specific handlers and everything else under {@code /api/} here.
+     */
+    @PostMapping("/api/**")
+    public Map<String, String> anyOtherType(@RequestBody CanonicalMessage message) {
+        return receive(message);
+    }
+
     private Map<String, String> receive(CanonicalMessage message) {
         log.info("cloud received {} payload={}", message.activityId(), message.payload());
         confirmStore.add(message);

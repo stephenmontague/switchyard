@@ -12,6 +12,9 @@ const SIGNALS: Record<string, { name: string; takesArg: boolean }> = {
   "apply-config": { name: "applyConfig", takesArg: true },
   "upsert-device": { name: "upsertDevice", takesArg: true },
   "remove-device": { name: "removeDevice", takesArg: true },
+  "upsert-message-type": { name: "upsertMessageType", takesArg: true },
+  "remove-message-type": { name: "removeMessageType", takesArg: true },
+  "import-catalog": { name: "importCatalog", takesArg: true },
 };
 
 export async function POST(request: Request) {

@@ -6,6 +6,22 @@ export type ChannelKind = "PATH" | "PORT" | "FOLDER";
 export type Direction = "CLOUD_TO_EDGE" | "EDGE_TO_CLOUD";
 export type LifecycleCommand = "NONE" | "SHUTDOWN" | "RESTART";
 
+/** Codecs the proxy ships (com.proxyapp.control.CatalogValidator.KNOWN_CODECS). */
+export type CodecName = "json" | "xml" | "raw";
+export const CODECS: CodecName[] = ["json", "xml", "raw"];
+
+/**
+ * One operator-defined message type (com.proxyapp.control.CatalogEntryDto). Edited via the
+ * Catalog page; lives in the control workflow state, no longer hardcoded in the proxy profile.
+ */
+export interface CatalogEntryDto {
+  type: string;
+  direction: Direction;
+  codec: CodecName;
+  cloudEndpoint?: string | null;
+  businessIdField?: string | null;
+}
+
 export interface Channel {
   kind: ChannelKind;
   value: string;
@@ -68,6 +84,8 @@ export interface ProxyControlState {
   version: number;
   lastError: string | null;
   typeDirections: Record<string, Direction>;
+  /** Full catalog (Part 3). Null on installs that predate it — proxy uses its profile catalog. */
+  catalogEntries?: CatalogEntryDto[] | null;
   tcpPortPool: number[];
   lifecycleCommand?: LifecycleCommand;
   lifecycleRequestId?: string | null;

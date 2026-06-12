@@ -24,6 +24,12 @@ public class ProxyControlState {
     private long version;
     private String lastError;
     private Map<String, String> typeDirections = new LinkedHashMap<>();
+    /**
+     * The operator-editable message catalog (Part 3). Null on workflows that predate Part 3 —
+     * the proxy then falls back to its boot profile catalog. {@code typeDirections} is kept as a
+     * derived projection of this so the device-binding validation stays unchanged.
+     */
+    private List<CatalogEntryDto> catalogEntries;
     private List<Integer> tcpPortPool = new ArrayList<>();
     private String lifecycleCommand = LIFECYCLE_NONE;
     private String lifecycleRequestId;
@@ -67,6 +73,14 @@ public class ProxyControlState {
 
     public void setTypeDirections(Map<String, String> typeDirections) {
         this.typeDirections = typeDirections;
+    }
+
+    public List<CatalogEntryDto> getCatalogEntries() {
+        return catalogEntries;
+    }
+
+    public void setCatalogEntries(List<CatalogEntryDto> catalogEntries) {
+        this.catalogEntries = catalogEntries;
     }
 
     public List<Integer> getTcpPortPool() {

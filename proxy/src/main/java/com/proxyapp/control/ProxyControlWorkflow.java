@@ -38,6 +38,18 @@ public interface ProxyControlWorkflow {
     @SignalMethod
     void removeDevice(String deviceId);
 
+    /** Add or replace one message type in the catalog. Rejected (with {@code lastError}) if invalid. */
+    @SignalMethod
+    void upsertMessageType(CatalogEntryDto entry);
+
+    /** Remove a message type. Rejected if any device binding still references it. */
+    @SignalMethod
+    void removeMessageType(String typeName);
+
+    /** Replace the whole catalog (profile import / reset). Rejected if it would orphan a binding. */
+    @SignalMethod
+    void importCatalog(List<CatalogEntryDto> entries);
+
     /** Ask the proxy process to shut down gracefully (supervisor decides what happens next). */
     @SignalMethod
     void requestShutdown();
