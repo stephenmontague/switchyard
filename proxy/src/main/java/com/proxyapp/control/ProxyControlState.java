@@ -14,12 +14,20 @@ import java.util.Map;
  */
 public class ProxyControlState {
 
+    /** Pending process-lifecycle command for the proxy: NONE, SHUTDOWN, or RESTART. */
+    public static final String LIFECYCLE_NONE = "NONE";
+    public static final String LIFECYCLE_SHUTDOWN = "SHUTDOWN";
+    public static final String LIFECYCLE_RESTART = "RESTART";
+
     private boolean enabled = true;
     private List<EdgeConfig> devices = new ArrayList<>();
     private long version;
     private String lastError;
     private Map<String, String> typeDirections = new LinkedHashMap<>();
     private List<Integer> tcpPortPool = new ArrayList<>();
+    private String lifecycleCommand = LIFECYCLE_NONE;
+    private String lifecycleRequestId;
+    private AppliedStatus applied;
 
     public boolean isEnabled() {
         return enabled;
@@ -67,5 +75,29 @@ public class ProxyControlState {
 
     public void setTcpPortPool(List<Integer> tcpPortPool) {
         this.tcpPortPool = tcpPortPool;
+    }
+
+    public String getLifecycleCommand() {
+        return lifecycleCommand;
+    }
+
+    public void setLifecycleCommand(String lifecycleCommand) {
+        this.lifecycleCommand = lifecycleCommand;
+    }
+
+    public String getLifecycleRequestId() {
+        return lifecycleRequestId;
+    }
+
+    public void setLifecycleRequestId(String lifecycleRequestId) {
+        this.lifecycleRequestId = lifecycleRequestId;
+    }
+
+    public AppliedStatus getApplied() {
+        return applied;
+    }
+
+    public void setApplied(AppliedStatus applied) {
+        this.applied = applied;
     }
 }

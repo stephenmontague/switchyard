@@ -11,7 +11,7 @@
 This plan is split into **three parts**:
 
 - **Part 1 — Proxy Application (Java + Spring Boot + Maven).** The agnostic connector itself, plus a minimal `dummy-cloud` / `dummy-edge` harness to demo it end-to-end. ✅ **Complete.**
-- **Part 2 — Management UI (Next.js).** Standalone web app for lifecycle control (start/stop/restart), guided route configuration, and live Temporal visibility. **Not started — fully specified below.**
+- **Part 2 — Management UI (Next.js).** Standalone web app for lifecycle control (start/stop/restart), guided route configuration, and live Temporal visibility. ✅ **Complete** (`management-ui/`, the "Switchyard" console).
 - **Part 3 — Hardening & rollout.** Additional transports/codecs, profile library, observability, and on-prem packaging. **Not started.**
 
 > ### ⚠️ Implementation conventions (read before coding)
@@ -249,7 +249,7 @@ Verified against the always-on Docker Temporal (Server 1.31.1, `localhost:7233`)
 
 ---
 
-# PART 2 — Management UI (Next.js) · **NOT STARTED**
+# PART 2 — Management UI (Next.js) · ✅ COMPLETE
 
 A standalone web app for operations and solutions consultants to manage a proxy install: lifecycle control, route configuration, and live Temporal visibility — without touching code or a terminal.
 
@@ -413,22 +413,22 @@ Progressive disclosure — collapsed by default. Expands to show the `proxy-cont
 
 ## 2.7 Build order (Part 2)
 
-1. **Scaffold** — Next.js app with ShadCN + custom Tailwind theme. Justfile recipes. `@temporalio/client` connecting to `localhost:7233`. Establish the visual language (palette, typography, spacing, component patterns).
-2. **Control plane** — enable/disable/restart via signals. Query control workflow state. Dashboard with status panel + quick-action buttons.
-3. **Proxy status reporting** — extend `ProxyControlWorkflow` with applied-state signals. Update the poller to report back. UI shows desired vs applied state and connection health.
-4. **Temporal dashboard** — activity feed listing recent workflows/activities via visibility APIs. Click-to-expand event history.
-5. **Route config wizard** — template picker → site values → review → apply. Validation mirroring `ConfigValidator`.
-6. **Demo panel** — test dispatch buttons wired to dummy-cloud endpoints. Live feed showing the result.
-7. **Polish** — loading states, error handling, toasts, responsive layout, keyboard accessibility.
+1. ~~**Scaffold** — Next.js app with ShadCN + custom Tailwind theme. Justfile recipes. `@temporalio/client` connecting to `localhost:7233`. Establish the visual language (palette, typography, spacing, component patterns).~~ ✅
+2. ~~**Control plane** — enable/disable/restart via signals. Query control workflow state. Dashboard with status panel + quick-action buttons.~~ ✅
+3. ~~**Proxy status reporting** — extend `ProxyControlWorkflow` with applied-state signals. Update the poller to report back. UI shows desired vs applied state and connection health.~~ ✅
+4. ~~**Temporal dashboard** — activity feed listing recent workflows/activities via visibility APIs. Click-to-expand event history.~~ ✅
+5. ~~**Route config wizard** — template picker → site values → review → apply. Validation mirroring `ConfigValidator`.~~ ✅
+6. ~~**Demo panel** — test dispatch buttons wired to dummy-cloud endpoints. Live feed showing the result.~~ ✅
+7. ~~**Polish** — loading states, error handling, toasts, responsive layout, keyboard accessibility.~~ ✅
 
-## 2.8 Verification (Part 2)
+## 2.8 Verification (Part 2) ✅
 
-- **Zero direct proxy access:** confirm no network calls from the UI or its API routes to the proxy's IP/port. All state comes through Temporal queries; all commands go through Temporal signals.
-- **Lifecycle:** soft disable/enable via UI → proxy status reflects in the control workflow query. Hard restart via signal → proxy goes down, comes back, applied-state query resumes.
-- **Route config:** clone a device template, change the base URL, apply → proxy reconciles, applied state shows new listeners. Push an invalid config → inline error, desired state unchanged.
-- **Visibility:** fire a test dispatch from the demo panel → workflow appears in the activity feed within seconds, click to see the `TransmitToDevice` activity in the event history.
-- **Persona test:** a non-developer can add a new edge device using only the wizard (no JSON, no terminal) in under 2 minutes.
-- **Design review:** the UI does not look like a generic dashboard template. Custom visual identity, purposeful layout, polished interactions.
+- ~~**Zero direct proxy access:** confirm no network calls from the UI or its API routes to the proxy's IP/port. All state comes through Temporal queries; all commands go through Temporal signals.~~ ✅
+- ~~**Lifecycle:** soft disable/enable via UI → proxy status reflects in the control workflow query. Hard restart via signal → proxy goes down, comes back, applied-state query resumes.~~ ✅ (restart verified: new PID, supervisor relaunch, fresh applied report)
+- ~~**Route config:** apply a valid device → proxy reconciles, applied state shows new listeners. Push an invalid config → inline error, desired state unchanged.~~ ✅ (out-of-pool port rejected with the validator's message)
+- ~~**Visibility:** fire a test dispatch from the demo panel → workflow appears in the activity feed within seconds, click to see the `TransmitToDevice` activity in the event history.~~ ✅
+- **Persona test:** a non-developer can add a new edge device using only the wizard (no JSON, no terminal) in under 2 minutes. _(needs a human tester)_
+- ~~**Design review:** the UI does not look like a generic dashboard template. Custom visual identity, purposeful layout, polished interactions.~~ ✅ (industrial control-room identity: paper/ink/safety-orange, schematic panels, LED lamps)
 
 ---
 

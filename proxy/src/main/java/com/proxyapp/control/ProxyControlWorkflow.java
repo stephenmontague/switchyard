@@ -38,6 +38,22 @@ public interface ProxyControlWorkflow {
     @SignalMethod
     void removeDevice(String deviceId);
 
+    /** Ask the proxy process to shut down gracefully (supervisor decides what happens next). */
+    @SignalMethod
+    void requestShutdown();
+
+    /** Ask the proxy process to restart: graceful exit + supervisor relaunch. */
+    @SignalMethod
+    void requestRestart();
+
+    /** Sent by the proxy just before it acts on a lifecycle command, clearing it. */
+    @SignalMethod
+    void ackLifecycle(String requestId);
+
+    /** Sent by the proxy after each reconcile so the cloud can see desired vs applied. */
+    @SignalMethod
+    void reportApplied(AppliedStatus status);
+
     @QueryMethod
     ProxyControlState getState();
 }

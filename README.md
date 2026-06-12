@@ -9,9 +9,11 @@ A **domain-agnostic, durable connector** that bridges any **Cloud** application 
 | Module                          | What it is                                                                 |
 | ------------------------------- | -------------------------------------------------------------------------- |
 | [`proxy/`](proxy/)              | The connector itself — the only Temporal worker, egress-only               |
-| [`dummy-cloud/`](dummy-cloud/README.md) | Demo cloud app (:8081) — Temporal client, demo + control endpoints |
-| [`dummy-edge/`](dummy-edge/README.md)   | Demo edge target (:8082, TCP 9001, FTP 2222) — auto-confirms       |
+| [`dummy-cloud/`](dummy-cloud/README.md) | Demo cloud app (:8091) — Temporal client, demo + control endpoints |
+| [`dummy-edge/`](dummy-edge/README.md)   | Demo edge target (:8092, TCP 9001, FTP 2222) — auto-confirms       |
+| [`management-ui/`](management-ui/README.md) | **Switchyard** operations console (:3000, Next.js) — lifecycle, routing wizard, live Temporal feed |
 | [`config/`](config/)            | Demo routing configs for hot-reload / validation demos                     |
+| [`scripts/`](scripts/)          | `proxy-supervisor.sh` — restart-on-exit wrapper for remote restarts        |
 | [`justfile`](justfile)          | Build + demo recipes (all run from this root)                              |
 
 The root [pom.xml](pom.xml) is a Maven aggregator: `mvn package` builds all three apps.
@@ -22,17 +24,21 @@ The proxy is the **only Temporal worker** and connects **egress-only** — no in
 firewall ports on the customer side. Data and control both ride the same outbound gRPC
 connection:
 
-- **Cloud → Edge**: the cloud client starts a `DeliverToEdge` **standalone activity**
-  (Activity ID `{messageType}-{businessId}`, reuse `REJECT_DUPLICATE` + conflict
-  `USE_EXISTING`); the proxy executes it — route → codec → connector → device channel.
+- **Cloud → Edge**: the cloud client starts a `DeliverToEdge` **workflow** (Workflow ID
+  `{messageType}-{businessId}`, reuse `REJECT_DUPLICATE` — duplicates collapse to one
+  execution); the proxy worker runs it, executing a `TransmitToDevice` activity —
+  route → codec → connector → device channel.
 - **Edge → Cloud**: the device pushes to a proxy ingress **channel** (HTTP path / TCP
   port / FTP folder). The channel — never the payload — identifies the message type. The
   proxy starts a `DeliverToCloud` standalone activity and acks the device only after
   Temporal accepted the enqueue.
 - **Control plane**: a singleton `ProxyControlWorkflow` (Workflow ID `proxy-control`)
-  holds desired state `{enabled, devices[], version}`. The cloud drives it with signals;
-  the proxy polls it via query and a `Reconciler` hot-applies changes (listeners, routes,
-  worker polling) with no restart.
+  holds desired state `{enabled, devices[], version}` plus lifecycle commands. The cloud
+  drives it with signals; the proxy polls it via query, a `Reconciler` hot-applies changes
+  (listeners, routes, worker polling) with no restart, and the proxy **reports its applied
+  state back** so the cloud sees desired vs applied without ever reaching the proxy's
+  network. `requestRestart`/`requestShutdown` signals make the proxy exit gracefully —
+  paired with the supervisor wrapper, that's a remote restart over egress-only gRPC.
 
 Everything domain-specific (message types, codecs, cloud endpoints, device templates)
 lives in a **profile**; the **Warehouse** profile (WMS ↔ MHE) ships as the reference demo.
@@ -54,6 +60,20 @@ just run-proxy           # 1: the proxy        (:8090, worker on proxy-main/prox
 just run-dummy-cloud     # 2: dummy cloud app  (:8091, Temporal client only)
 just run-dummy-edge      # 3: dummy edge target(:8092 + TCP 9001 + FTP 2222)
 ```
+
+> Use `just run-proxy-managed` instead of `run-proxy` to run the proxy under the
+> restart-on-exit supervisor — required for the management UI's RESTART button.
+
+### Management UI (optional 4th terminal)
+
+```sh
+just run-ui              # Switchyard console at http://localhost:3000
+```
+
+Lifecycle control (enable/disable/restart/shutdown), a guided device-config wizard with
+validation, a live feed of message workflows/activities with event history, and demo
+dispatch — all through Temporal signals/queries. **The UI never talks to the proxy
+directly**, so the on-prem firewall only ever passes the single egress gRPC connection.
 
 Then:
 
@@ -102,7 +122,8 @@ proxy/src/main/java/com/proxyapp/
 ├── profile/       Profile SPI, WarehouseProfile (reference), ProfileRegistry
 ├── codec/         MessageCodec SPI, JsonCodec (default), CodecRegistry
 ├── connector/     Connector SPI, Http/Tcp/FtpConnector, ChannelTarget, ConnectorFactory
-├── temporal/      DeliverToEdgeActivity, DeliverToCloudActivity (standalone activities)
+├── temporal/      workflow/ DeliverToEdgeWorkflow (cloud→edge dispatch)
+│                  activity/ DeliverToEdgeActivity ("TransmitToDevice"), DeliverToCloudActivity
 ├── ingress/       InboundGateway (channel→type→decode→enqueue→ack),
 │                  HttpIngressController, TcpSocketServer, FtpIngressListener, AdminController
 └── control/       ProxyControlWorkflow(+Impl), ProxyControlStarter, ProxyControlPoller, Reconciler

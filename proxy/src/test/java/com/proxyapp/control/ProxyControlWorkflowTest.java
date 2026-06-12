@@ -97,6 +97,36 @@ class ProxyControlWorkflowTest {
         assertThat(workflow.getState().getLastError()).contains("no device with id mhe-1");
     }
 
+    @Test
+    void lifecycleCommandRoundTrip() {
+        workflow.requestRestart();
+        ProxyControlState state = workflow.getState();
+        assertThat(state.getLifecycleCommand()).isEqualTo(ProxyControlState.LIFECYCLE_RESTART);
+        assertThat(state.getLifecycleRequestId()).isNotBlank();
+
+        // a stale/bogus ack must not clear a live command
+        workflow.ackLifecycle("not-the-request-id");
+        assertThat(workflow.getState().getLifecycleCommand())
+                .isEqualTo(ProxyControlState.LIFECYCLE_RESTART);
+
+        workflow.ackLifecycle(state.getLifecycleRequestId());
+        state = workflow.getState();
+        assertThat(state.getLifecycleCommand()).isEqualTo(ProxyControlState.LIFECYCLE_NONE);
+        assertThat(state.getLifecycleRequestId()).isNull();
+    }
+
+    @Test
+    void appliedReportIsReflectedInState() {
+        workflow.reportApplied(new AppliedStatus(3, true, List.of("/pick-confirm"),
+                List.of(6001), List.of("cycle-count-confirm"),
+                "2026-06-11T12:00:00Z", "2026-06-11T12:00:05Z"));
+        AppliedStatus applied = workflow.getState().getApplied();
+        assertThat(applied).isNotNull();
+        assertThat(applied.version()).isEqualTo(3);
+        assertThat(applied.tcpPorts()).containsExactly(6001);
+        assertThat(applied.startedAt()).isEqualTo("2026-06-11T12:00:00Z");
+    }
+
     private static RouteBinding binding(ProxyControlState state) {
         return state.getDevices().get(0).bindings().get(0);
     }

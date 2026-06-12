@@ -87,8 +87,42 @@ public class ProxyControlWorkflowImpl implements ProxyControlWorkflow {
     }
 
     @Override
+    public void requestShutdown() {
+        requestLifecycle(ProxyControlState.LIFECYCLE_SHUTDOWN);
+    }
+
+    @Override
+    public void requestRestart() {
+        requestLifecycle(ProxyControlState.LIFECYCLE_RESTART);
+    }
+
+    @Override
+    public void ackLifecycle(String requestId) {
+        if (requestId == null || !requestId.equals(state.getLifecycleRequestId())) {
+            return; // stale or replayed ack for a command that was already superseded
+        }
+        log.info("lifecycle command '{}' acknowledged by proxy", state.getLifecycleCommand());
+        state.setLifecycleCommand(ProxyControlState.LIFECYCLE_NONE);
+        state.setLifecycleRequestId(null);
+        changes++;
+    }
+
+    @Override
+    public void reportApplied(AppliedStatus status) {
+        state.setApplied(status);
+        changes++;
+    }
+
+    @Override
     public ProxyControlState getState() {
         return state;
+    }
+
+    private void requestLifecycle(String command) {
+        state.setLifecycleCommand(command);
+        state.setLifecycleRequestId(Workflow.randomUUID().toString());
+        changes++;
+        log.info("lifecycle command '{}' requested ({})", command, state.getLifecycleRequestId());
     }
 
     private void accept(String change) {

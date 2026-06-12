@@ -1,21 +1,34 @@
 package com.proxyapp.control;
 
-import io.temporal.client.WorkflowClient;
+import com.proxyapp.ingress.FtpIngressListener;
+import com.proxyapp.ingress.TcpSocketServer;
 import com.proxyapp.routing.RoutingState;
+import io.temporal.client.WorkflowClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.SpringApplication;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.SmartLifecycle;
 
+import java.time.Instant;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Queries the control workflow on a short interval and hands changed state to the
- * Reconciler. This poll (plus worker polling) is the proxy's entire control surface —
- * everything rides the egress gRPC connection; no inbound port is ever opened.
+ * Queries the control workflow on a short interval, hands changed state to the Reconciler,
+ * reports the applied state back (so the cloud can see desired vs applied), and acts on
+ * lifecycle commands. This poll (plus worker polling) is the proxy's entire control
+ * surface — everything rides the egress gRPC connection; no inbound port is ever opened.
  */
 public class ProxyControlPoller implements SmartLifecycle {
+
+    /**
+     * Exit code asking the supervisor wrapper (see {@code just run-proxy-managed}, or
+     * systemd in production) to relaunch the process. Plain shutdown exits 0 and stays down.
+     */
+    public static final int RESTART_EXIT_CODE = 10;
 
     private static final Logger log = LoggerFactory.getLogger(ProxyControlPoller.class);
     private static final long POLL_INTERVAL_MS = 2_000;
@@ -24,6 +37,11 @@ public class ProxyControlPoller implements SmartLifecycle {
     private final ProxyControlStarter starter;
     private final Reconciler reconciler;
     private final RoutingState routingState;
+    private final TcpSocketServer tcpSocketServer;
+    private final FtpIngressListener ftpIngressListener;
+    private final ApplicationContext applicationContext;
+    private final String startedAt = Instant.now().toString();
+    private final AtomicBoolean exiting = new AtomicBoolean();
     private final ScheduledExecutorService executor =
             Executors.newSingleThreadScheduledExecutor(r -> {
                 Thread t = new Thread(r, "proxy-control-poller");
@@ -31,13 +49,20 @@ public class ProxyControlPoller implements SmartLifecycle {
                 return t;
             });
     private volatile boolean running;
+    private volatile long lastReportedVersion = -1;
+    private volatile Boolean lastReportedEnabled;
 
     public ProxyControlPoller(WorkflowClient workflowClient, ProxyControlStarter starter,
-                              Reconciler reconciler, RoutingState routingState) {
+                              Reconciler reconciler, RoutingState routingState,
+                              TcpSocketServer tcpSocketServer, FtpIngressListener ftpIngressListener,
+                              ApplicationContext applicationContext) {
         this.workflowClient = workflowClient;
         this.starter = starter;
         this.reconciler = reconciler;
         this.routingState = routingState;
+        this.tcpSocketServer = tcpSocketServer;
+        this.ftpIngressListener = ftpIngressListener;
+        this.applicationContext = applicationContext;
     }
 
     @Override
@@ -47,6 +72,9 @@ public class ProxyControlPoller implements SmartLifecycle {
     }
 
     private void pollOnce() {
+        if (exiting.get()) {
+            return;
+        }
         try {
             ProxyControlWorkflow stub = workflowClient.newWorkflowStub(
                     ProxyControlWorkflow.class, ProxyControlWorkflow.WORKFLOW_ID);
@@ -55,6 +83,8 @@ public class ProxyControlPoller implements SmartLifecycle {
                     || state.isEnabled() != routingState.enabled()) {
                 reconciler.apply(state);
             }
+            maybeReportApplied(stub);
+            handleLifecycle(stub, state);
         } catch (Exception e) {
             // Not started yet (fresh namespace) or transient connectivity — ensure and retry.
             log.debug("control poll failed ({}); ensuring control workflow exists", e.toString());
@@ -64,6 +94,50 @@ public class ProxyControlPoller implements SmartLifecycle {
                 log.warn("cannot reach control workflow: {}", startFailure.getMessage());
             }
         }
+    }
+
+    /** Signal the applied state back whenever it changes (and once at startup). */
+    private void maybeReportApplied(ProxyControlWorkflow stub) {
+        long appliedVersion = routingState.appliedVersion();
+        boolean enabled = routingState.enabled();
+        if (appliedVersion == lastReportedVersion
+                && lastReportedEnabled != null && lastReportedEnabled == enabled) {
+            return;
+        }
+        AppliedStatus status = new AppliedStatus(appliedVersion, enabled,
+                routingState.table().inboundHttpPaths().stream().sorted().toList(),
+                tcpSocketServer.activePorts().stream().sorted().toList(),
+                ftpIngressListener.activeFolders().stream().sorted().toList(),
+                startedAt, Instant.now().toString());
+        stub.reportApplied(status);
+        lastReportedVersion = appliedVersion;
+        lastReportedEnabled = enabled;
+        log.info("reported applied state v{} (enabled={}) to control workflow",
+                appliedVersion, enabled);
+    }
+
+    /** Act on a pending shutdown/restart command: ack it, then exit the JVM gracefully. */
+    private void handleLifecycle(ProxyControlWorkflow stub, ProxyControlState state) {
+        String command = state.getLifecycleCommand();
+        String requestId = state.getLifecycleRequestId();
+        if (command == null || requestId == null
+                || ProxyControlState.LIFECYCLE_NONE.equals(command)) {
+            return;
+        }
+        if (!exiting.compareAndSet(false, true)) {
+            return;
+        }
+        // Ack first so the cleared command is durable before the process goes away —
+        // otherwise the relaunched proxy would see the same command and exit again.
+        stub.ackLifecycle(requestId);
+        int exitCode = ProxyControlState.LIFECYCLE_RESTART.equals(command) ? RESTART_EXIT_CODE : 0;
+        log.info("lifecycle command '{}' received from cloud — exiting with code {}", command, exitCode);
+        Thread exitThread = new Thread(() -> {
+            int code = SpringApplication.exit(applicationContext, () -> exitCode);
+            System.exit(code);
+        }, "proxy-lifecycle-exit");
+        exitThread.setDaemon(false);
+        exitThread.start();
     }
 
     @Override

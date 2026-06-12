@@ -1,7 +1,6 @@
 package com.dummycloud;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import io.temporal.api.enums.v1.WorkflowIdConflictPolicy;
 import io.temporal.api.enums.v1.WorkflowIdReusePolicy;
 import io.temporal.client.WorkflowClient;
 import io.temporal.client.WorkflowExecutionAlreadyStarted;
@@ -43,13 +42,15 @@ public class OutboundDispatcher {
                 new CanonicalMessage(messageType, idNode.asText(), body.toString());
         String workflowId = message.activityId();
 
+        // Reuse REJECT_DUPLICATE blocks re-dispatch after completion; the default conflict
+        // policy (FAIL) makes a concurrent duplicate throw too — both surface as
+        // WorkflowExecutionAlreadyStarted so we can report duplicate=true. Either way
+        // exactly one execution ever runs.
         WorkflowOptions options = WorkflowOptions.newBuilder()
                 .setWorkflowId(workflowId)
                 .setTaskQueue(properties.proxy().taskQueue())
                 .setWorkflowIdReusePolicy(
                         WorkflowIdReusePolicy.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE)
-                .setWorkflowIdConflictPolicy(
-                        WorkflowIdConflictPolicy.WORKFLOW_ID_CONFLICT_POLICY_USE_EXISTING)
                 .setMemo(Map.of("origin",
                         "[CLOUD] Dispatched from cloud application (dummy-cloud)"))
                 .build();

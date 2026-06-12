@@ -71,6 +71,12 @@ temporal-status:
 run-proxy:
     mvn -q -pl proxy spring-boot:run -Dspring-boot.run.profiles=local
 
+# Run the proxy under a restart-on-exit supervisor. Required for the management UI's
+# RESTART button: the proxy exits with code 10 and the wrapper relaunches it.
+run-proxy-managed:
+    mvn -q -pl proxy package -DskipTests
+    ./scripts/proxy-supervisor.sh
+
 # Run the dummy cloud app
 run-dummy-cloud:
     mvn -q -pl dummy-cloud spring-boot:run -Dspring-boot.run.profiles=local
@@ -78,6 +84,16 @@ run-dummy-cloud:
 # Run the dummy edge target
 run-dummy-edge:
     mvn -q -pl dummy-edge spring-boot:run -Dspring-boot.run.profiles=local
+
+# Run the management UI (Next.js dev server on http://localhost:3000)
+run-ui:
+    @[ -d management-ui/node_modules ] || (cd management-ui && npm install)
+    cd management-ui && npm run dev
+
+# Production build of the management UI
+build-ui:
+    @[ -d management-ui/node_modules ] || (cd management-ui && npm install)
+    cd management-ui && npm run build
 
 # ---------------------------------------------------------------------------
 # Demo (assumes: Temporal on 7233, run-proxy, run-dummy-cloud, run-dummy-edge are up)

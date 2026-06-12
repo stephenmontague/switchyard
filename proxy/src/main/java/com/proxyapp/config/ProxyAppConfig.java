@@ -24,6 +24,7 @@ import io.temporal.client.WorkflowClient;
 import io.temporal.serviceclient.WorkflowServiceStubs;
 import io.temporal.worker.WorkerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.ResourceLoader;
@@ -108,7 +109,11 @@ public class ProxyAppConfig {
     public ProxyControlPoller proxyControlPoller(WorkflowClient workflowClient,
                                                  ProxyControlStarter starter,
                                                  Reconciler reconciler,
-                                                 RoutingState routingState) {
-        return new ProxyControlPoller(workflowClient, starter, reconciler, routingState);
+                                                 RoutingState routingState,
+                                                 TcpSocketServer tcpSocketServer,
+                                                 FtpIngressListener ftpIngressListener,
+                                                 ApplicationContext applicationContext) {
+        return new ProxyControlPoller(workflowClient, starter, reconciler, routingState,
+                tcpSocketServer, ftpIngressListener, applicationContext);
     }
 }
