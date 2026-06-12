@@ -148,5 +148,10 @@ just means the work waits in Temporal and delivers on reconnect.
 ## Tests
 
 ```sh
-just test   # routing core, validator, codec, templates, resolver, control workflow
+just test      # Java: routing core, validator, codec, TCP wire protocol, control workflow
+just test-ui   # TypeScript: WireString/validator parity vectors (vitest)
 ```
+
+## License
+
+[MIT](LICENSE)
